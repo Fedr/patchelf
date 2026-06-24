@@ -16,43 +16,52 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install build deps + clang/lld
+      - name: Install build deps + linkers
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config clang lld cmake ninja-build
+          sudo apt-get install -y autoconf automake libtool pkg-config clang lld cmake ninja-build binutils || true
+          sudo apt-get install -y binutils-gold 2>/dev/null || echo "(gold unavailable)"
 
       - name: Build patchelf (FIXED = PR #652, this branch)
         run: |
           ./bootstrap.sh && ./configure && make -j"$(nproc)"
           cp src/patchelf /tmp/patchelf-fixed
-          echo "fixed:"; /tmp/patchelf-fixed --version
+          /tmp/patchelf-fixed --version
 
       - name: Build patchelf (CONTROL = 21f21b3, parent of the fix)
         run: |
           git worktree add /tmp/ctrl 21f21b3
           cd /tmp/ctrl && ./bootstrap.sh && ./configure && make -j"$(nproc)"
           cp src/patchelf /tmp/patchelf-control
-          echo "control:"; /tmp/patchelf-control --version
+          /tmp/patchelf-control --version
 
-      - name: Build the REAL MeshLib shim (mrbind-pybind11 @ b747f677, clang+lld)
+      - name: Build the real shim across linkers (mrbind-pybind11 @ b747f677)
         run: |
           git clone https://github.com/MeshInspector/mrbind-pybind11 /tmp/mp
-          cd /tmp/mp
-          git checkout b747f677ab30ec62aca834c78383cd92c90e6b32
-          cmake -G Ninja -S source/non_limited_api -B /tmp/mp/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
-            -DPYBIND11_NONLIMITEDAPI_SUFFIX=meshlib \
-            -DPYBIND11_NONLIMITEDAPI_PYTHON_MIN_VERSION_HEX=0x030800f0
-          cmake --build /tmp/mp/build -j"$(nproc)"
-          echo "=== built libraries ==="
-          find /tmp/mp/build -name '*.so' -printf '%p (%s bytes)\n'
-          shim="$(find /tmp/mp/build -name 'libpybind11nonlimitedapi*meshlib*3.12*.so' | head -1)"
-          [ -z "$shim" ] && shim="$(find /tmp/mp/build -name 'libpybind11nonlimitedapi*.so' ! -name '*stubs*' | head -1)"
-          echo "shim=$shim"
-          cp "$shim" /tmp/realshim.so
+          cd /tmp/mp && git checkout b747f677ab30ec62aca834c78383cd92c90e6b32
+          build() { # $1=tag  $2=extra link flags
+            local tag="$1" flags="$2" dir="/tmp/mp/b-$1"
+            echo "=== configuring $tag (flags: $flags) ==="
+            cmake -G Ninja -S source/non_limited_api -B "$dir" \
+              -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
+              -DCMAKE_SHARED_LINKER_FLAGS="$flags" -DCMAKE_EXE_LINKER_FLAGS="$flags" \
+              -DPYBIND11_NONLIMITEDAPI_SUFFIX=meshlib \
+              -DPYBIND11_NONLIMITEDAPI_PYTHON_MIN_VERSION_HEX=0x030800f0 \
+              && cmake --build "$dir" -j"$(nproc)" \
+              && cp "$dir/libpybind11nonlimitedapi_meshlib_3.12.so" "/tmp/shim-$tag.so" \
+              && echo "  -> /tmp/shim-$tag.so" \
+              || echo "  !! $tag build failed"
+          }
+          build lld      "-fuse-ld=lld"
+          build bfd      "-fuse-ld=bfd"
+          build gold     "-fuse-ld=gold"
+          build lldnoro  "-fuse-ld=lld -Wl,--no-rosegment"
+          # stub for dlopen dependency resolution
+          cp /tmp/mp/b-lld/libpybind11nonlimitedapi_stubs.so /tmp/ 2>/dev/null || \
+            cp /tmp/mp/b-bfd/libpybind11nonlimitedapi_stubs.so /tmp/ 2>/dev/null || true
+          ls -la /tmp/shim-*.so 2>/dev/null || true
 
-      - name: Verify #639 on the real shim (fixed vs control)
-        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control /tmp/realshim.so
+      - name: Verify #639 on the real shim(s), fixed vs control
+        run: |
+          PYLIB=$(python3 -c 'import sysconfig;print(sysconfig.get_config_var("LIBDIR"))')
+          bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control "/tmp:$PYLIB" /tmp/shim-*.so
