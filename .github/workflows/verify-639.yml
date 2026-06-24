@@ -12,28 +12,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install build deps + clang/lld
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config clang lld
+          sudo apt-get install -y autoconf automake libtool pkg-config clang lld cmake ninja-build
 
       - name: Build patchelf (FIXED = PR #652, this branch)
         run: |
-          ./bootstrap.sh
-          ./configure
-          make -j"$(nproc)"
+          ./bootstrap.sh && ./configure && make -j"$(nproc)"
           cp src/patchelf /tmp/patchelf-fixed
           echo "fixed:"; /tmp/patchelf-fixed --version
 
       - name: Build patchelf (CONTROL = 21f21b3, parent of the fix)
         run: |
           git worktree add /tmp/ctrl 21f21b3
-          cd /tmp/ctrl
-          ./bootstrap.sh
-          ./configure
-          make -j"$(nproc)"
+          cd /tmp/ctrl && ./bootstrap.sh && ./configure && make -j"$(nproc)"
           cp src/patchelf /tmp/patchelf-control
           echo "control:"; /tmp/patchelf-control --version
 
-      - name: Reproduce #639 (fixed vs control)
-        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control
+      - name: Build the REAL MeshLib shim (mrbind-pybind11 @ b747f677, clang+lld)
+        run: |
+          git clone https://github.com/MeshInspector/mrbind-pybind11 /tmp/mp
+          cd /tmp/mp
+          git checkout b747f677ab30ec62aca834c78383cd92c90e6b32
+          cmake -G Ninja -S source/non_limited_api -B /tmp/mp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+            -DPYBIND11_NONLIMITEDAPI_SUFFIX=meshlib \
+            -DPYBIND11_NONLIMITEDAPI_PYTHON_MIN_VERSION_HEX=0x030800f0
+          cmake --build /tmp/mp/build -j"$(nproc)"
+          echo "=== built libraries ==="
+          find /tmp/mp/build -name '*.so' -printf '%p (%s bytes)\n'
+          shim="$(find /tmp/mp/build -name 'libpybind11nonlimitedapi*meshlib*3.12*.so' | head -1)"
+          [ -z "$shim" ] && shim="$(find /tmp/mp/build -name 'libpybind11nonlimitedapi*.so' ! -name '*stubs*' | head -1)"
+          echo "shim=$shim"
+          cp "$shim" /tmp/realshim.so
+
+      - name: Verify #639 on the real shim (fixed vs control)
+        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control /tmp/realshim.so
