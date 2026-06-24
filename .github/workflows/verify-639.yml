@@ -1,0 +1,39 @@
+name: verify-639
+on:
+  push:
+    branches: [verify-639]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build deps + clang/lld
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake libtool pkg-config clang lld
+
+      - name: Build patchelf (FIXED = PR #652, this branch)
+        run: |
+          ./bootstrap.sh
+          ./configure
+          make -j"$(nproc)"
+          cp src/patchelf /tmp/patchelf-fixed
+          echo "fixed:"; /tmp/patchelf-fixed --version
+
+      - name: Build patchelf (CONTROL = 21f21b3, parent of the fix)
+        run: |
+          git worktree add /tmp/ctrl 21f21b3
+          cd /tmp/ctrl
+          ./bootstrap.sh
+          ./configure
+          make -j"$(nproc)"
+          cp src/patchelf /tmp/patchelf-control
+          echo "control:"; /tmp/patchelf-control --version
+
+      - name: Reproduce #639 (fixed vs control)
+        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control
