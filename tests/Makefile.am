@@ -41,6 +41,7 @@ src_TESTS = \
   basic-flags.sh \
   set-empty-rpath.sh \
   phdr-corruption.sh \
+  pht-relocation.sh \
   replace-needed.sh \
   replace-add-needed.sh \
   add-debug-tag.sh \
@@ -67,7 +68,8 @@ build_TESTS = \
 TESTS = $(src_TESTS) $(build_TESTS)
 
 EXTRA_DIST = no-rpath-prebuild $(src_TESTS) no-rpath-prebuild.sh invalid-elf endianness empty-note \
-			 overlapping-segments-after-rounding short-first-segment.gz
+			 overlapping-segments-after-rounding short-first-segment.gz \
+			 pht-relocation/libcrypto.so.1.1.xz
 
 TESTS_ENVIRONMENT = PATCHELF_DEBUG=1 STRIP=$(STRIP) NM=$(NM) OBJDUMP=$(OBJDUMP) READELF=$(READELF) OBJCOPY=$(OBJCOPY) STRINGS=$(STRINGS)
 
