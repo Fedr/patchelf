@@ -59,7 +59,8 @@ src_TESTS = \
   shared-rpath.sh \
   short-first-segment.sh \
   empty-note.sh \
-  set-interpreter-same.sh
+  set-interpreter-same.sh \
+  property-rewrite.sh
 
 build_TESTS = \
   $(no_rpath_arch_TESTS)

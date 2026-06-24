@@ -43,3 +43,4 @@ CMakeLists.txt.user
 .vscode/
 .idea/
 result
+/tests/property-fail-*
