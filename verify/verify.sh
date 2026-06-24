@@ -1,16 +1,15 @@
 #!/bin/bash
-# Reproduce NixOS/patchelf#639: --set-rpath relocates .init in an lld-produced
-# shared library but DT_INIT is left pointing at the old address, so the dynamic
-# loader jumps to a stale address and SIGSEGVs at dlopen.
+# Reproduce NixOS/patchelf#639: --set-rpath grows the program-header table (PHT)
+# and relocates .init, but DT_INIT is left pointing at the old address -> the
+# dynamic loader jumps to a stale address and SIGSEGVs at dlopen.
 #
 # Usage: verify.sh <patchelf-FIXED> <patchelf-CONTROL>
-#   FIXED   = patchelf built from PR #652 (has the DT_INIT/DT_FINI fixup)
-#   CONTROL = patchelf built from the commit just before the fix
 #
-# The blocker for a regression test (per the PR author) is *triggering* the
-# .init relocation. lld only overruns .init when it sits at a low file offset
-# immediately after the program-header table, which depends on the segment
-# layout, so we sweep a few link configs and report which ones trigger.
+# The trigger condition is that .init sits at a low file offset immediately
+# after the PHT, so growing the PHT overruns it. Default lld layouts place
+# .init *after* the dynamic tables (high offset), so we use --section-start to
+# pull .init down next to the PHT, mirroring the real-world lld binary in #639
+# (PHT 0x40..0x200, .init at 0x224).
 set -u
 
 PE_FIXED="$1"
@@ -33,35 +32,37 @@ int main(int argc, char **argv) {
 EOF
 cc -O2 -o "$work/dlopen" "$work/dlopen.c" -ldl
 
-# A long RPATH forces .dynstr growth -> section relocation -> PHT growth.
 RP="\$ORIGIN/$(head -c 6000 /dev/zero | tr '\0' x)"
 
 init_shaddr() { readelf -SW "$1" | awk '{for(i=1;i<=NF;i++) if($i==".init") print $(i+2)}'; }
 dt_init()     { readelf -dW "$1" | awk '/\(INIT\)/{print $NF}'; }
+phnum()       { readelf -hW "$1" | awk '/Number of program headers/{print $NF}'; }
+dlopen_rc() { cp "$1" "$work/cur.so"; ( cd "$work" && ./dlopen "$work/cur.so" ); echo $?; }
 
-dlopen_rc() {  # prints exit code: 0=loaded, 139=SIGSEGV, 2=dlopen null
-    cp "$1" "$work/cur.so"
-    ( cd "$work" && ./dlopen "$work/cur.so" ); echo $?
-}
-
-# name -> extra linker flags
-names=(default noseparate-code no-rosegment separate-loadable)
-declare -A FLAGS=(
-  [default]=""
-  [noseparate-code]="-Wl,-z,noseparate-code"
-  [no-rosegment]="-Wl,-z,noseparate-code -Wl,--no-rosegment"
-  [separate-loadable]="-Wl,-z,separate-loadable-segments"
+# config name | extra link flags
+configs=(
+  "default|"
+  "secstart-0x1c0|-Wl,--section-start=.init=0x1c0"
+  "secstart-0x200|-Wl,--section-start=.init=0x200"
+  "secstart-0x240|-Wl,--section-start=.init=0x240"
+  "secstart-0x280|-Wl,--section-start=.init=0x280"
+  "secstart-0x300|-Wl,--section-start=.init=0x300"
 )
 
 trigger_found=0
 fix_broken=0
 
-for name in "${names[@]}"; do
+for entry in "${configs[@]}"; do
+    name="${entry%%|*}"; flags="${entry#*|}"
     base="$work/$name"
     # shellcheck disable=SC2086
-    clang -fuse-ld=lld -shared -fPIC -O2 -Wl,--build-id=sha1 ${FLAGS[$name]} \
+    clang -fuse-ld=lld -shared -fPIC -O2 -Wl,--build-id=sha1 $flags \
           -o "$base.so" "$work/foo.c" 2>"$base.lderr" \
-        || { echo "==== config=$name : LINK FAILED ===="; cat "$base.lderr"; echo; continue; }
+        || { echo "==== config=$name : LINK FAILED ===="; sed 's/^/    /' "$base.lderr"; echo; continue; }
+
+    echo "==== config=$name  (phnum=$(phnum "$base.so")) ===="
+    echo "  -- original layout (sections with low offsets) --"
+    readelf -SW "$base.so" | awk 'NR<=6 || /\.(init|plt|text|note|dynstr|dynsym|gnu\.hash)\b/' | sed 's/^/    /'
 
     sh0="$(init_shaddr "$base.so")"; dt0="$(dt_init "$base.so")"
 
@@ -71,13 +72,12 @@ for name in "${names[@]}"; do
     shF="$(init_shaddr "$base.fixed.so")"; dtF="$(dt_init "$base.fixed.so")"
     shC="$(init_shaddr "$base.ctrl.so")";  dtC="$(dt_init "$base.ctrl.so")"
 
-    moved=no; [ "$sh0" != "$shF" ] && moved=YES
+    moved=no; [ -n "$shF" ] && [ "$sh0" != "$shF" ] && moved=YES
     matchF=n/a; [ -n "$shF" ] && { [ "$((dtF))" -eq "$((16#$shF))" ] && matchF=YES || matchF=no; }
     matchC=n/a; [ -n "$shC" ] && { [ "$((dtC))" -eq "$((16#$shC))" ] && matchC=YES || matchC=no; }
     rcF="$(dlopen_rc "$base.fixed.so")"
     rcC="$(dlopen_rc "$base.ctrl.so")"
 
-    echo "==== config=$name ===="
     echo "  .init sh_addr : orig=$sh0  fixed=$shF  ctrl=$shC   (relocated=$moved)"
     echo "  DT_INIT       : orig=$dt0  fixed=$dtF  ctrl=$dtC"
     echo "  DT_INIT==.init: fixed=$matchF  ctrl=$matchC"
@@ -86,11 +86,8 @@ for name in "${names[@]}"; do
 
     if [ "$moved" = YES ]; then
         trigger_found=1
-        if [ "$matchF" = YES ] && [ "$rcF" = 0 ]; then
-            :
-        else
-            fix_broken=1
-            echo "  *** FIX FAILED for config '$name' (matchF=$matchF rcF=$rcF) ***"
+        if [ "$matchF" = YES ] && [ "$rcF" = 0 ]; then :; else
+            fix_broken=1; echo "  *** FIX FAILED for config '$name' (matchF=$matchF rcF=$rcF) ***"
         fi
     fi
 done
@@ -104,6 +101,6 @@ if [ "$fix_broken" -eq 1 ]; then
     echo "VERDICT: FAIL - PR #652 did not fix at least one triggering case"
     exit 1
 fi
-echo "VERDICT: PASS - PR #652 updates DT_INIT on .init relocation; the library dlopens cleanly"
+echo "VERDICT: PASS - PR #652 keeps DT_INIT in sync with the relocated .init; the library dlopens cleanly"
 echo "         (control patchelf leaves DT_INIT stale and SIGSEGVs on the same input)"
 exit 0
