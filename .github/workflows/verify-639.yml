@@ -23,12 +23,12 @@ jobs:
           cp src/patchelf /tmp/patchelf-fixed
           /tmp/patchelf-fixed --version
 
-      - name: Build patchelf (CONTROL = 21f21b3, parent of the fix)
+      - name: Build patchelf 0.18.0 (RELEASED — the version linuxdeploy used in May)
         run: |
-          git worktree add /tmp/ctrl 21f21b3
-          cd /tmp/ctrl && ./bootstrap.sh && ./configure && make -j"$(nproc)"
-          cp src/patchelf /tmp/patchelf-control
-          /tmp/patchelf-control --version
+          git clone -q --depth 1 --branch 0.18.0 https://github.com/NixOS/patchelf /tmp/v018
+          cd /tmp/v018 && ./bootstrap.sh && ./configure && make -j"$(nproc)"
+          cp src/patchelf /tmp/patchelf-018
+          /tmp/patchelf-018 --version
 
-      - name: Verify #639 on the real MeshLib shim (control vs fixed)
-        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control verify/fixture/libpybind11nonlimitedapi_meshlib_3.12.so.xz
+      - name: Verify #639 on the real MeshLib shim (0.18.0 vs PR #652)
+        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-018 verify/fixture/libpybind11nonlimitedapi_meshlib_3.12.so.xz
