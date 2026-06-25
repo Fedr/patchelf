@@ -31,5 +31,4 @@ jobs:
           /tmp/patchelf-control --version
 
       - name: Verify #639 on the real MeshLib shim (control vs fixed)
-        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control \
-               verify/fixture/libpybind11nonlimitedapi_meshlib_3.12.so.xz
+        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control verify/fixture/libpybind11nonlimitedapi_meshlib_3.12.so.xz
