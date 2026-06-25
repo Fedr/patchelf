@@ -12,15 +12,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install build deps + linkers
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y autoconf automake libtool pkg-config clang lld cmake ninja-build binutils || true
-          sudo apt-get install -y binutils-gold 2>/dev/null || echo "(gold unavailable)"
+          sudo apt-get install -y autoconf automake libtool pkg-config xz-utils
 
       - name: Build patchelf (FIXED = PR #652, this branch)
         run: |
@@ -35,25 +30,6 @@ jobs:
           cp src/patchelf /tmp/patchelf-control
           /tmp/patchelf-control --version
 
-      - name: Pull the REAL shipped shim from the meshlib wheel
-        run: |
-          python -m pip download meshlib --only-binary=:all: --no-deps -d /tmp/whl \
-            --python-version 3.12 --platform manylinux2014_x86_64 \
-            || python -m pip download meshlib --only-binary=:all: --no-deps -d /tmp/whl \
-            || python -m pip download meshlib --no-deps -d /tmp/whl
-          echo "=== downloaded ==="; ls -la /tmp/whl
-          mkdir -p /tmp/whl/x
-          for w in /tmp/whl/*.whl; do echo "unzip $w"; unzip -o "$w" -d /tmp/whl/x >/dev/null; done
-          echo "=== shims inside the wheel ==="
-          find /tmp/whl/x -name 'libpybind11nonlimitedapi*' -printf '%p (%s bytes)\n'
-          s="$(find /tmp/whl/x -name 'libpybind11nonlimitedapi_meshlib_3.12.so' | head -1)"
-          [ -z "$s" ] && s="$(find /tmp/whl/x -name 'libpybind11nonlimitedapi_meshlib_*.so' | sort | tail -1)"
-          echo "selected shim: $s"
-          cp "$s" /tmp/shim-wheel.so
-          find /tmp/whl/x -name 'libpybind11nonlimitedapi_stubs*.so' -exec cp {} /tmp/ \; 2>/dev/null || true
-          ls -la /tmp/shim-*.so
-
-      - name: Verify #639 on the real shim(s), fixed vs control
-        run: |
-          PYLIB=$(python3 -c 'import sysconfig;print(sysconfig.get_config_var("LIBDIR"))')
-          bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control "/tmp:$PYLIB" /tmp/shim-*.so
+      - name: Verify #639 on the real MeshLib shim (control vs fixed)
+        run: bash verify/verify.sh /tmp/patchelf-fixed /tmp/patchelf-control \
+               verify/fixture/libpybind11nonlimitedapi_meshlib_3.12.so.xz
